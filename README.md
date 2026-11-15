@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/Fourteenjs/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/Fourteenjs/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-Token launch radar ranking 198 pre-token protocols tracked by DefiLlama by implied launch value, with a no-network static dashboard, per-protocol farm plans, and a model sandbox.
+Token launch radar ranking 198 pre-token protocols tracked by DefiLlama by implied launch value, with a no-network static dashboard, per-protocol farm plans netted to the dollar with a FARM / THIN / SKIP verdict, and a comparables curve fitted on the snapshot's own 128 live-token protocols and backtested out of sample.
 
 ## Run it
 

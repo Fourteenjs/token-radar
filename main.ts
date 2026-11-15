@@ -7,10 +7,13 @@
 // network and no fetch. Last, it writes /output/dossier.json, the summary the judge reads, with
 // the vendored make.fun library.
 //
-// The model is the entry's own claim: a category's median market-cap-to-TVL, read off the
-// protocols whose token already trades, times TVL, times a log-dampened growth multiplier, times a
-// maturity premium for how long the protocol has run with no token. No protocol name is ever
-// special-cased: the same function scores every row.
+// The model is the entry's own claim: a log-log comparables curve fitted at build time on the
+// snapshot's own live-token protocols, with a shrunk category adjustment, times a log-dampened
+// growth multiplier, times a maturity premium for how long the protocol has run with no token.
+// Every farm plan is netted to the dollar at the low end of the airdrop band and carries a
+// FARM / THIN / SKIP verdict. No protocol name is ever special-cased: the same functions score
+// every row, and the curve's coefficients and its out-of-sample tests are computed from the
+// snapshot at build time, never written in by hand.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../token-radar-01-kit/input/snapshot.json
@@ -46,6 +49,7 @@ const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
+const earlySize = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -88,6 +92,10 @@ for (const name of shots) {
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${earlySize} early, ${radar.live.length} live set aside)\n` +
+    `token radar: curve log10(mcap) = ${radar.fit.intercept} + ${radar.fit.slope} x log10(TVL) on ${radar.fit.n_comps} comps, R2 ${radar.fit.r2}; ` +
+    `5-fold CV median |log10| ${radar.backtest.cv_median_abs_log10}, ${(radar.backtest.cv_within_2x * 100).toFixed(1)}% within 2x (median baseline ${radar.backtest.baseline_cv_median_abs_log10}); ` +
+    `blind median ratio ${radar.backtest.blind_median_ratio}\n` +
+    `token radar: verdicts FARM ${radar.verdicts.FARM}, THIN ${radar.verdicts.THIN}, SKIP ${radar.verdicts.SKIP}; audited ${radar.audit.pre_token} pre-token protocols\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'dashboard')} (${dashFiles.length} files + data.js), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
