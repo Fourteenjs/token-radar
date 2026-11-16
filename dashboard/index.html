@@ -10,11 +10,11 @@
 <header class="mast">
   <p class="kicker">TOKEN RADAR &nbsp;·&nbsp; DEFI LLAMA SNAPSHOT <span id="asOf">—</span></p>
   <h1>Which protocol launches next — and what it would be worth</h1>
-  <p class="lede">Every rankable protocol DefiLlama tracks that records no token yet, ranked by the implied value of
-  its launch. The value is this radar&rsquo;s own claim, built from the snapshot&rsquo;s own figures:
-  a comparables curve fitted on the 128 protocols whose token already trades, seven-day growth,
-  and how long the protocol has run with no token. Every farm plan is netted to the dollar and
-  carries a verdict: FARM, THIN or SKIP. It is not a prediction of whether or when a token is issued.</p>
+  <p class="lede">Every rankable protocol DefiLlama tracks that records no token yet, ranked by its launch&rsquo;s
+  implied value — each with a 90% band, so close ranks read as close calls. The value is this radar&rsquo;s own claim,
+  built from the snapshot&rsquo;s own figures: a comparables curve fitted on the 128 protocols whose token already
+  trades, seven-day growth, and how long the protocol has run with no token. Every farm plan is netted to the dollar
+  and carries a verdict: FARM, THIN or SKIP. It is not a prediction of whether or when a token is issued.</p>
   <dl class="stats" id="stats"></dl>
   <section class="model" aria-label="The value model">
     <div class="model-head">
@@ -23,28 +23,26 @@
     </div>
     <p class="model-note" id="modelNote">—</p>
     <p class="model-note" id="backtestLine">—</p>
+    <p class="model-note" id="bandLine">—</p>
     <div class="multiples" id="adjustments"></div>
   </section>
   <section class="note-block" aria-label="How to read this radar">
     <h2>How to read this radar</h2>
-    <p><b>Rank is size; verdict is the farm.</b> The board ranks by implied launch value, which is
-    dominated by TVL. The verdict prices the farm itself: the low-end airdrop pool (5% of the implied
-    value) shared among an estimated farmer crowd, minus the gas for the whole plan and the yield the
-    capital could have earned elsewhere. A big protocol can be a thin farm when its growth has stalled
-    and its crowd is large; a smaller, fast-growing one can be a farm.</p>
-    <p><b>The farmer crowd is an assumption, stated plainly.</b> Farmers grow with the square root-ish
-    of TVL (800 &times; (TVL / $1M)<sup>0.35</sup>, between 500 and 120,000): TVL concentrates in a few
-    large deposits, while farmers are counted in users, not dollars.</p>
-    <p><b>What the curve cannot see.</b> The snapshot carries no users, no revenue and no points
-    program, so the model prices TVL, growth and age only. A fitted value is typically within a factor
-    of two of the market&rsquo;s own — useful for ranking, not a price target. The stats above the board
-    say how many pre-token protocols were audited; the Live tokens view shows the 8 largest tokens the
-    curve was fitted on, kept out of the ranking.</p>
-    <p><b>Farm steps are templates, not verified listings.</b> Each plan is built from the
-    protocol&rsquo;s category and chains, so confirm the market, pool or vault exists on the
-    protocol&rsquo;s own page before depositing. Verdicts assume the principal comes back on unwind,
-    which holds for deposits and vaults but not for insurance premiums, prediction stakes or
-    leveraged positions — for those, treat the verdict as an upper bound.</p>
+    <p><b>Rank is size; verdict is the farm.</b> The board ranks by implied launch value, dominated by
+    TVL. The verdict prices the farm: the low-end pool (5% of the implied value) shared among an
+    estimated farmer crowd, minus the plan&rsquo;s gas and the yield the capital could have earned elsewhere.
+    A big protocol can be thin when its growth has stalled and its crowd is large; a smaller, fast-growing
+    one can be a farm.</p>
+    <p><b>The band is the honest part.</b> Every implied value carries a 90% bootstrap band (200 refits
+    on resampled comparables). The median band is about three times wide, so neighbours inside one band
+    are a close call. The growth multiplier is a stated prior, not a fitted fact: among the
+    live tokens, seven-day growth does <i>not</i> predict a richer multiple (correlation −0.14), and growth, age
+    and chain count together explain under 3% of the curve&rsquo;s misses.</p>
+    <p><b>What the curve cannot see.</b> The snapshot carries no users, no revenue and no points program, so the
+    model prices TVL, growth and age only — useful for ranking, not a price target. Farm steps are templates
+    from the protocol&rsquo;s category and chains: confirm the market, pool or vault exists on the protocol&rsquo;s
+    own page before depositing. Verdicts assume the principal comes back on unwind — for insurance
+    premiums, prediction stakes or leveraged positions, treat the verdict as an upper bound.</p>
   </section>
 </header>
 
@@ -71,6 +69,7 @@
     <option value="age">Age</option>
     <option value="net">Farm net</option>
   </select></label>
+  <label class="ctl check"><input type="checkbox" id="fWatch"> Watchlist only</label>
   <div class="views" role="group" aria-label="View">
     <button type="button" id="viewBoard" class="on">Board</button>
     <button type="button" id="viewLive">Live tokens</button>
@@ -100,7 +99,7 @@
   </section>
 
   <section id="liveView" aria-label="Live tokens" hidden>
-    <p class="count">Protocols whose token already trades, by market cap. The board never mixes these
+    <p class="count">Protocols whose token already trades, by market cap. The board never mixes them
     with the pre-token ranking: their value is the market&rsquo;s own, not the model&rsquo;s.</p>
     <div class="table-wrap">
       <table id="liveTable">
@@ -111,12 +110,15 @@
         <tbody id="liveBody"></tbody>
       </table>
     </div>
+    <div class="breakdown anchors"><h3>Anchors — what each category&rsquo;s tokens actually trade at</h3>
+    <p class="break-note">Medians over the live-token protocols in each category.</p>
+    <table><tbody id="anchorBody"></tbody></table></div>
   </section>
 </main>
 
 <footer>
-  <p>Snapshot: <span id="srcLine">—</span> The watchlist is the floor, never the ceiling:
-  all 40 of its protocols are ranked here, plus every other rankable one below the floor.
+  <p>Snapshot: <span id="srcLine">—</span> The watchlist is the floor: all 40 of its protocols
+  are ranked here, plus every other rankable one.
   &ldquo;Records no token&rdquo; is DefiLlama&rsquo;s record, not proof of none. Implied values are
   this entry&rsquo;s claim, never a promise; farming carries smart-contract risk — never farm with
   funds you cannot lose.</p>

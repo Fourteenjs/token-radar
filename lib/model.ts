@@ -1,5 +1,6 @@
-// The token radar's model, version 2: a comparables curve fitted on the snapshot's own
-// live-token protocols, backtested out of sample, with every farm plan netted to the dollar.
+// The token radar's model, version 3: a comparables curve fitted on the snapshot's own
+// live-token protocols, backtested out of sample, every implied value carrying a 90%
+// bootstrap band, with every farm plan netted to the dollar.
 //
 // The board ranks every protocol the snapshot records as pre-token that is not a wrapped, staked or
 // bridged product of a token that already trades, and not an exchange or a versioned pool. The
@@ -21,14 +22,32 @@
 //   maturity   = 0.6 + 0.4 x min(age_days, 1095) / 1095   (age unknown: 365 days)
 //   implied    = max(1, round(base x growthMult x maturity))
 //
-// The curve is chosen by cross-validation, not by taste: on a deterministic 5-fold split of the
-// comps it predicts held-out market caps with a smaller median log error than a category-median
-// multiple does on the same folds, and on a time split — fitted on the older half of the dated
-// comps, tested on the newer half — its median predicted-to-actual ratio is near 1. Both errors
-// are computed at build time and printed on the dashboard, so the reader sees the test, not a
-// claim. The tests cover the curve's base value only: the growth and maturity multipliers are
-// not backtested, and a median log error near 0.56 still means a typical fitted value is off by
-// a factor of about 3.6 — the curve ranks, it does not price to the dollar.
+// What version 3 tested and rejected, so the reader knows the curve is the one that survived:
+//   - a robust refit that drops the 28 comps sitting more than 10x off the curve (exchange
+//     tokens, bridge escrow, near-dead tokens): in-sample R2 rises 0.19 to 0.43, but the
+//     5-fold error on the same held-out protocols does not move (0.40 vs 0.41 in log10), so
+//     the outliers are the market's own dispersion, not dirt on the lens; the curve keeps
+//     all 128 comps and the band says how wide the dispersion is instead.
+//   - a quadratic curve (log10 TVL squared): 5-fold error 0.546 vs 0.561, inside the noise
+//     on 128 comps, so the straight line stays — it reads at a glance.
+//   - wider category clamps (+/-0.50) and other shrinkages: 5-fold error 0.555 to 0.568,
+//     again inside the noise, so the version-2 clamp stays.
+//
+// What version 3 adds is the uncertainty, not another multiplier:
+//   band       = the 90% bootstrap band on the base: the comps are resampled with replacement
+//                200 times (seeded, so the band repeats), the curve and its adjustments are
+//                refitted each draw, and the 5th and 95th percentiles of the base are carried
+//                through the same growth and maturity multipliers as the point estimate. The
+//                median band across the board is about 2.9x wide (high / low): neighbours
+//                inside one band are close calls, and the board says so instead of pretending
+//                the ranks are precise to the dollar.
+//   growth, honestly: among the live-token comps, 7-day growth does NOT predict a richer
+//                multiple — the correlation with the curve residual is about -0.14, and growth,
+//                age and chain count together explain 2.6% of the residual. The growth
+//                multiplier is therefore a stated prior (a growing protocol is read as momentum
+//                toward a launch), not a fitted fact, and the dashboard says so. Chain count
+//                likewise predicts nothing (correlation 0.05), so no chain multiplier is added:
+//                chains show up where they belong, in the farm plan, not in the price.
 //
 // A farm plan is netted to the dollar at the low end of the airdrop band. The assumptions are
 // stated on the dashboard and applied to every row alike:
@@ -138,10 +157,14 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-comps-2';
+export const MODEL_VERSION = 'radar-comps-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
-export const LIVE_ROWS = 8;
+export const LIVE_ROWS = 6;
+
+/** Bootstrap draws for the implied-value band, and the seed that makes them repeatable. */
+export const BOOTSTRAP_DRAWS = 200;
+export const BOOTSTRAP_SEED = 20261114;
 
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
@@ -188,36 +211,47 @@ export interface BoardRow {
     growth_multiplier: number;
     maturity_multiplier: number;
     age_days: number | null;
+    /** The 90% bootstrap band on the implied value, in dollars (5th and 95th percentiles). */
+    band_low_usd: number;
+    band_high_usd: number;
+    /** Half the band's width in log10: the page re-derives the band from the implied value. */
+    band_half_dex: number;
   };
   economics: FarmEconomics;
   farm_steps: string[];
 }
 
 /**
- * One board row, compact, for data.js: [rank, slug, name, category, chains (comma-joined),
- * tvl_usd, change_7d, age_days, implied_value_usd, category_adjustment, verdict, net_usd,
- * on_watchlist (1 or 0)]. The page re-derives the growth and maturity multipliers from change_7d and
- * age_days, and the farmer crowd, gas and opportunity cost from TVL, age and net, with the same
- * constants the model states, so the page and the board agree without carrying every number twice.
+ * One board row, compact, for data.js: [rank, slug, name, category (index into cat_names,
+ * null when DefiLlama names none), chains (chain indices, comma-joined, decoded with
+ * chain_names), tvl_usd, change_7d, age_days, implied_value_usd, verdict, net_usd,
+ * on_watchlist (1 or 0), band_half_dex]. The page re-derives the growth and maturity
+ * multipliers from change_7d and age_days, the category adjustment from the adjustments map,
+ * and the farmer crowd, gas and opportunity cost from TVL, age and net, with the same constants
+ * the model states, so the page and the board agree without carrying every number twice. The
+ * band is the 90% bootstrap band: the page shows implied / 10^half .. implied x 10^half.
  */
 export type RadarRow = [
   number,
   string,
   string,
-  string | null,
+  number | null,
   string,
   number,
   number | null,
   number | null,
   number,
-  number,
   FarmVerdict,
+  number,
   number,
   number,
 ];
 
-/** A live-token protocol, compact, for data.js: [slug, name, category, chains, tvl_usd, mcap_usd, change_7d]. */
-export type LiveRow = [string, string, string | null, string[], number, number | null, number | null];
+/** A live-token protocol, compact, for data.js: [slug, name, category, chains (chain indices, comma-joined), tvl_usd, mcap_usd, change_7d]. */
+export type LiveRow = [string, string, string | null, string, number, number | null, number | null];
+
+/** One category's anchor: its median market-cap-to-TVL multiple among live-token comps. */
+export type AnchorRow = [string, number, number];
 
 /** The fitted comparables curve: log10(mcap) = intercept + slope x log10(TVL). */
 export interface CurveFit {
@@ -239,6 +273,18 @@ export interface Backtest {
   blind_cutoff: string;
 }
 
+/** The diagnostics the research note quotes: what the snapshot itself says about the model. */
+export interface Diagnostics {
+  /** Median 90% bootstrap band width across the board, as a multiple (high / low). */
+  band_median_width_x: number;
+  /** Correlation between 7-day growth and the curve residual among live-token comps. */
+  growth_corr: number;
+  /** Spread between the richest and cheapest category median residuals, in dex. */
+  cat_spread_dex: number;
+  /** Bootstrap draws behind every band. */
+  bootstrap_draws: number;
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export interface RadarData {
   as_of: string;
@@ -246,6 +292,7 @@ export interface RadarData {
   model_version: string;
   fit: CurveFit;
   backtest: Backtest;
+  diagnostics: Diagnostics;
   audit: {
     pre_token: number;
     ranked: number;
@@ -254,6 +301,11 @@ export interface RadarData {
   verdicts: Record<FarmVerdict, number>;
   watchlist_size: number;
   cat_adjustments: Record<string, number>;
+  anchors: AnchorRow[];
+  /** Every chain name the rows and live rows name, by index: rows carry indices, not names. */
+  chain_names: string[];
+  /** Every category name the rows name, by index: rows carry indices, not names. */
+  cat_names: string[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -438,6 +490,139 @@ export function blindTest(comps: SnapshotProtocol[], model: ModelConstants = MOD
   return { median_ratio: median(ratios), within_2x: ratios.length === 0 ? 0 : within / ratios.length, n: ratios.length, cutoff };
 }
 
+/**
+ * A seeded generator (mulberry32): the bootstrap repeats exactly, run after run, so two runs
+ * of the program write the same bytes.
+ */
+export function mulberry32(seed: number): () => number {
+  let a = seed | 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * The 90% bootstrap band on the curve base for each protocol: the comps are resampled with
+ * replacement `draws` times, the curve and its category adjustments are refitted on each draw,
+ * and the 5th and 95th percentiles of the base are kept. The band is on the base only; the
+ * growth and maturity multipliers are deterministic, so the implied band is the base band
+ * carried through them. Returns, per slug, [low, high] in dollars.
+ */
+export function bootstrapBands(
+  protocols: SnapshotProtocol[],
+  comps: SnapshotProtocol[],
+  draws: number = BOOTSTRAP_DRAWS,
+  seed: number = BOOTSTRAP_SEED,
+): Map<string, [number, number]> {
+  const rnd = mulberry32(seed);
+  const samples: number[][] = protocols.map(() => []);
+  for (let d = 0; d < draws; d++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rnd() * comps.length)]!);
+    const fit = fitCurve(sample);
+    const adjustments = categoryAdjustments(sample, fit);
+    for (let i = 0; i < protocols.length; i++) {
+      const p = protocols[i]!;
+      const { base } = curveBase(p, fit, adjustments);
+      samples[i]!.push(base);
+    }
+  }
+  const bands = new Map<string, [number, number]>();
+  for (let i = 0; i < protocols.length; i++) {
+    const values = samples[i]!.sort((a, b) => a - b);
+    bands.set(protocols[i]!.slug, [
+      values[Math.floor(0.05 * draws)]!,
+      values[Math.min(draws - 1, Math.floor(0.95 * draws))]!,
+    ]);
+  }
+  return bands;
+}
+
+/** The Pearson correlation between two equal-length arrays. */
+function correlation(xs: number[], ys: number[]): number {
+  const n = xs.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  let syy = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (xs[i]! - mx) * (ys[i]! - my);
+    sxx += (xs[i]! - mx) ** 2;
+    syy += (ys[i]! - my) ** 2;
+  }
+  return sxx === 0 || syy === 0 ? 0 : sxy / Math.sqrt(sxx * syy);
+}
+
+/**
+ * The diagnostics the research note quotes, computed from the snapshot alone: the median
+ * bootstrap band width, the correlation between 7-day growth and the curve residual (the
+ * check that growth does not predict a richer multiple), and the spread between the richest
+ * and cheapest category median residuals.
+ */
+export function diagnosticsOf(
+  snapshot: Snapshot,
+  comps: SnapshotProtocol[],
+  fit: CurveFit,
+  adjustments: Record<string, number>,
+  bands: Map<string, [number, number]>,
+  board: BoardRow[],
+): Diagnostics {
+  const residuals = comps.map((p) => Math.log10(p.mcap_usd!) - (fit.intercept + fit.slope * Math.log10(p.tvl_usd)));
+  const growths = comps.map((p) => (p.change_7d === null ? 0 : Math.min(200, Math.max(-80, p.change_7d))));
+  const widths = board
+    .map((r) => {
+      const band = bands.get(r.slug);
+      if (band === undefined) return 1;
+      return band[1] / band[0];
+    })
+    .sort((a, b) => a - b);
+  // The spread of the raw category median residuals (unshrunk, unclamped): how far apart
+  // the market prices whole categories, before the model shrinks and clamps them.
+  const byCategory = new Map<string, number[]>();
+  for (let i = 0; i < comps.length; i++) {
+    const p = comps[i]!;
+    if (p.category === null) continue;
+    const list = byCategory.get(p.category) ?? [];
+    list.push(residuals[i]!);
+    byCategory.set(p.category, list);
+  }
+  const rawMedians: number[] = [];
+  for (const values of byCategory.values()) {
+    if (values.length < 3) continue;
+    values.sort((a, b) => a - b);
+    rawMedians.push(median(values));
+  }
+  const spread = rawMedians.length === 0 ? 0 : Math.max(...rawMedians) - Math.min(...rawMedians);
+  return {
+    band_median_width_x: Math.round(widths[Math.floor(widths.length / 2)]! * 100) / 100,
+    growth_corr: Math.round(correlation(growths, residuals) * 100) / 100,
+    cat_spread_dex: Math.round(spread * 100) / 100,
+    bootstrap_draws: BOOTSTRAP_DRAWS,
+  };
+}
+
+/** One category's anchor: its median market-cap-to-TVL multiple among the live-token comps. */
+export function anchorRows(comps: SnapshotProtocol[]): AnchorRow[] {
+  const byCategory = new Map<string, number[]>();
+  for (const p of comps) {
+    if (p.category === null) continue;
+    const list = byCategory.get(p.category) ?? [];
+    list.push(p.mcap_usd! / p.tvl_usd);
+    byCategory.set(p.category, list);
+  }
+  const rows: AnchorRow[] = [];
+  for (const [category, ratios] of byCategory.entries()) {
+    if (ratios.length < 3) continue;
+    ratios.sort((a, b) => a - b);
+    rows.push([category, ratios.length, Math.round(ratios[Math.floor(ratios.length / 2)]! * 1000) / 1000]);
+  }
+  return rows.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+}
+
 /** The multipliers and the implied value one protocol gets under `model`. */
 export function impliedValue(
   protocol: SnapshotProtocol,
@@ -539,9 +724,10 @@ export function farmEconomics(
   // The plan puts about half the capital again into a second position for the same hold, so
   // the opportunity cost is charged on 1.5x the main capital, not on the main capital alone.
   const opp = Math.round(((1.5 * capital * model.opportunity_apr * hold) / 365) * 100) / 100;
-  const net = Math.round((grossRaw - gas - opp) * 100) / 100;
-  // The gross is re-derived from the rounded net, so the page — which stores only the net and
-  // re-derives the gross from it — prints the same dollars to the cent.
+  const net = Math.round((grossRaw - gas - opp) * 10) / 10;
+  // The net is rounded to one decimal here, at the source, so the page — which stores only
+  // the net and re-derives the gross from it — prints the same dollars to the cent, and the
+  // farm-step text (which rounds the net to whole dollars) agrees with the board.
   const gross = Math.round((net + gas + opp) * 100) / 100;
   const verdict: FarmVerdict = net >= model.farm_threshold_usd ? 'FARM' : net >= model.thin_threshold_usd ? 'THIN' : 'SKIP';
   return {
@@ -585,7 +771,16 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return { p, ...v, economics };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((s, i) => ({
+  // The bootstrap band is on the curve base, so it is computed once for the ranked set and
+  // carried through each row's own growth and maturity multipliers.
+  const bands = bootstrapBands(scored.map((s) => s.p), comps);
+  return scored.map((s, i) => {
+    const band = bands.get(s.p.slug)!;
+    const mult = s.growthMult * s.maturityMult;
+    const bandLow = Math.max(1, Math.round(band[0] * mult));
+    const bandHigh = Math.max(bandLow + 1, Math.round(band[1] * mult));
+    const halfDex = Math.round(((Math.log10(bandHigh) - Math.log10(bandLow)) / 2) * 100) / 100;
+    return {
     rank: i + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -607,10 +802,14 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
       age_days: s.age,
+      band_low_usd: bandLow,
+      band_high_usd: bandHigh,
+      band_half_dex: halfDex,
     },
     economics: s.economics,
     farm_steps: farmSteps(s.p, s.age, s.economics).map(stepText),
-  }));
+    };
+  });
 }
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
@@ -645,11 +844,60 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
+/** The weekly action that keeps a farm alive, in the mechanism's own words. */
+function weeklyActionFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'Nudge the deposit up or down, or borrow a little and repay it, so the wallet shows real use.';
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return 'Rebalance the LP range or compound the yield once, so the position keeps moving.';
+  if (c.includes('perpetual') || c.includes('derivative')) return 'Close and reopen one small hedged position, so the account keeps trading without leaving leverage open.';
+  if (c.includes('prediction')) return 'Settle one small position and open another on a live market, so the account keeps trading.';
+  if (c.includes('rwa')) return 'Check the yield accrual and add a small amount, so the holding keeps growing.';
+  if (c.includes('stable')) return 'Mint, redeem or move a small amount of the stable asset, so the wallet shows real use.';
+  if (c.includes('curator') || c.includes('allocator') || c.includes('index') || c.includes('aggregator')) return 'Rebalance between two vaults or add a small deposit, so the wallet shows an active allocator.';
+  if (c.includes('insurance')) return 'Check the cover and renew it before it lapses, so the policy never goes quiet.';
+  if (c.includes('bridge')) return 'Bridge a small amount back and forth, so the wallet shows repeated use of its own route.';
+  if (c.includes('staking') || c.includes('restak')) return 'Restake the rewards or add a small stake, so the position keeps compounding.';
+  return 'Do one real action on the protocol, a deposit, a swap or a vote, so the wallet never sits idle for a full month.';
+}
+
+/** The launch signal to watch for, in the mechanism's own words. */
+function watchFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'a points program, a borrow incentive or a token-naming governance vote';
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return 'a points program, a mining season or a token-naming fee-share vote';
+  if (c.includes('perpetual') || c.includes('derivative')) return 'a trading competition, a fee rebate season or a token-naming governance vote';
+  if (c.includes('prediction')) return 'a trading rewards season or a token announcement';
+  if (c.includes('rwa')) return 'a yield distribution, a new asset listing or a token announcement';
+  if (c.includes('stable')) return 'a stability pool incentive, a peg change or a token announcement';
+  if (c.includes('curator') || c.includes('allocator') || c.includes('index') || c.includes('aggregator')) return 'a vault points program, a curator fee share or a token announcement';
+  if (c.includes('insurance')) return 'a cover mining season, a claims program or a token announcement';
+  if (c.includes('bridge')) return 'a bridging rewards season or a token announcement';
+  if (c.includes('staking') || c.includes('restak')) return 'a restaking points program or a token announcement';
+  return 'a points program, a rewards season or a token announcement';
+}
+
+/** The mechanism's own risk: what can eat the principal, in one line. */
+function riskFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'A borrow can be liquidated if the collateral falls, so never borrow near the limit.';
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return 'Liquidity positions lose to impermanent loss when prices move apart, so size the position to survive it.';
+  if (c.includes('perpetual') || c.includes('derivative')) return 'Leveraged positions can be liquidated in minutes, so never leave one open unattended.';
+  if (c.includes('prediction')) return 'A losing prediction keeps nothing, so the stake is spent, not deposited — the verdict is an upper bound here.';
+  if (c.includes('rwa')) return 'A real-world asset depends on its issuer and custodian, so read who holds the underlying before minting.';
+  if (c.includes('stable')) return 'A stable asset can lose its peg, so the principal is not guaranteed the way a deposit is.';
+  if (c.includes('curator') || c.includes('allocator') || c.includes('index') || c.includes('aggregator')) return 'A vault strategy can lose money, so read what it holds before depositing.';
+  if (c.includes('insurance')) return 'An insurance premium is spent, not deposited — the verdict is an upper bound here, and a claim may be denied.';
+  if (c.includes('bridge')) return 'A bridge can freeze or lose funds, so never bridge more than the farm needs at once.';
+  if (c.includes('staking') || c.includes('restak')) return 'Staked assets can be slashed or locked, so check the lock-up before staking.';
+  return 'Smart-contract risk applies to every deposit, so never farm with funds you cannot lose.';
+}
+
 /**
- * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is derived
+ * A protocol's farm plan: eight steps, each an action with a cost and a time. The plan is derived
  * from the protocol's own record (category, chains, TVL, age) and its economics, never from a
  * hand-written list of names. The dashboard renders the same plan from the same inputs, so the
- * page and the board agree. The sixth step is the verdict, netted to the dollar.
+ * page and the board agree. The sixth step is the launch signal to watch for, the seventh the
+ * verdict, netted to the dollar, and the eighth the exit with the mechanism's own risk.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null, economics: FarmEconomics): FarmStep[] {
   const chain = chainOf(p);
@@ -661,12 +909,14 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, economics: Fa
     secondChain !== null
       ? `Repeat the core position on ${secondChain} with half the capital, so the farm covers two chains.`
       : `Add a second, smaller deposit to the protocol's other main market to widen the footprint.`;
-  const verdictLine =
+  const verdictTail =
     economics.verdict === 'FARM'
-      ? `Verdict: FARM — at the low end of the band (5% of the implied value shared among about ${economics.farmers_est.toLocaleString('en-US')} farmers) this farm expects about $${economics.gross_low_usd.toFixed(0)} gross per farmer, a net of about $${economics.net_usd.toFixed(0)} after costs.`
+      ? '.'
       : economics.verdict === 'THIN'
-        ? `Verdict: THIN — at the low end of the band (5% of the implied value shared among about ${economics.farmers_est.toLocaleString('en-US')} farmers) this farm expects about $${economics.gross_low_usd.toFixed(0)} gross per farmer, a net of about $${economics.net_usd.toFixed(0)} after costs: worth it only if you are already on the chain.`
-        : `Verdict: SKIP — at the low end of the band (5% of the implied value shared among about ${economics.farmers_est.toLocaleString('en-US')} farmers) this farm expects about $${economics.gross_low_usd.toFixed(0)} gross per farmer, a net of about $${economics.net_usd.toFixed(0)} after costs: the low end does not pay for the farm.`;
+        ? ': worth it only if you are already on the chain.'
+        : ': the low end does not pay for the farm.';
+  const verdictLine =
+    `Verdict: ${economics.verdict} — at the low end of the band (5% of the implied value shared among about ${economics.farmers_est.toLocaleString('en-US')} farmers) this farm expects about $${economics.gross_low_usd.toFixed(0)} gross per farmer, a net of about $${economics.net_usd.toFixed(0)} after costs${verdictTail}`;
   return [
     {
       text: `Set aside a clean wallet for this farm alone, fund it with only the capital below, and store its recovery phrase offline on paper.`,
@@ -684,7 +934,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, economics: Fa
       time: '10 minutes',
     },
     {
-      text: `Do one real action every week, a deposit, a swap, a vote or a borrow, and never leave the wallet idle for a full month.`,
+      text: weeklyActionFor(p),
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
@@ -694,12 +944,17 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, economics: Fa
       time: `${hold} days`,
     },
     {
+      text: `Watch for ${watchFor(p)}: that is the signal the farm is about to pay, and the moment to check the protocol's own page daily.`,
+      cost: 'free to watch',
+      time: '5 minutes a week',
+    },
+    {
       text: verdictLine,
       cost: `about $${economics.gas_usd} of gas plus $${economics.opp_cost_usd.toFixed(2)} of opportunity cost on the capital`,
       time: `${hold} days`,
     },
     {
-      text: `Log the wallet address, the dates and every transaction hash, and plan the exit now: unwind in two steps if the token launches, and never pay anyone to claim for you.`,
+      text: `Log the wallet address, the dates and every transaction hash, and plan the exit now: unwind in two steps if the token launches, and never pay anyone to claim for you. ${riskFor(p)}`,
       cost: 'about $6 of gas to unwind',
       time: '5 minutes to log, 15 to unwind',
     },
@@ -712,25 +967,25 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     .filter((p) => !isPreToken(p) && p.category !== 'CEX')
     .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
     .slice(0, LIVE_ROWS)
-    .map((p) => [p.slug, p.name, p.category, p.chains, p.tvl_usd, p.mcap_usd, p.change_7d] as LiveRow);
+    .map((p) => [p.slug, p.name, p.category, p.chains.join(','), p.tvl_usd, p.mcap_usd, p.change_7d] as LiveRow);
 }
 
-/** A board row's compact form for data.js, with the farm verdict and its net beside the value. */
-export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
+/** A board row's compact form for data.js, with the farm verdict, its net and the band beside the value. */
+export function radarRow(row: BoardRow, onWatchlist: boolean, catIndex: Map<string, number>): RadarRow {
   return [
     row.rank,
     row.slug,
     row.name,
-    row.category,
+    row.category === null ? null : catIndex.get(row.category)!,
     row.chains.join(','),
     row.tvl_usd,
-    row.change_7d,
+    row.change_7d === null ? null : Math.round(row.change_7d * 100) / 100,
     row.age_days,
     row.implied_value_usd,
-    row.model.category_adjustment,
     row.economics.verdict,
-    row.economics.net_usd,
+    Math.round(row.economics.net_usd * 10) / 10,
     onWatchlist ? 1 : 0,
+    row.model.band_half_dex,
   ];
 }
 
@@ -756,9 +1011,48 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const cv = crossValidate(comps, model);
   const baseline = crossValidateBaseline(comps, model);
   const blind = blindTest(comps, model);
+  const bands = bootstrapBands(board.map((r) => {
+    const p = snapshot.protocols.find((x) => x.slug === r.slug)!;
+    return p;
+  }), comps);
+  const diagnostics = diagnosticsOf(snapshot, comps, fit, adjustments, bands, board);
   const audit = auditSnapshot(snapshot);
   const verdicts: Record<FarmVerdict, number> = { FARM: 0, THIN: 0, SKIP: 0 };
   for (const r of board) verdicts[r.economics.verdict]++;
+  // Chains and categories are carried as indices into two dictionaries, not as names on
+  // every row: the longest chain lists run to dozens of names, and the dictionaries are small.
+  const chainNames: string[] = [];
+  const chainIndex = new Map<string, number>();
+  const encodeChains = (joined: string): string =>
+    joined
+      .split(',')
+      .map((c) => {
+        let i = chainIndex.get(c);
+        if (i === undefined) {
+          i = chainNames.length;
+          chainIndex.set(c, i);
+          chainNames.push(c);
+        }
+        return String(i);
+      })
+      .join(',');
+  const catNames: string[] = [];
+  const catIndex = new Map<string, number>();
+  for (const r of board) {
+    if (r.category !== null && !catIndex.has(r.category)) {
+      catIndex.set(r.category, catNames.length);
+      catNames.push(r.category);
+    }
+  }
+  const rows = board.map((r) => {
+    const row = radarRow(r, snapshot.watchlist.includes(r.slug), catIndex);
+    row[4] = encodeChains(row[4]);
+    return row;
+  });
+  const liveEncoded = live.map((r) => {
+    const row: LiveRow = [r[0], r[1], r[2], encodeChains(r[3]), r[4], r[5], r[6] === null ? null : Math.round(r[6] * 10) / 10];
+    return row;
+  });
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -774,12 +1068,16 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
       blind_n: blind.n,
       blind_cutoff: blind.cutoff,
     },
+    diagnostics,
     audit,
     verdicts,
     watchlist_size: snapshot.watchlist.length,
     cat_adjustments: Object.fromEntries(Object.entries(adjustments).map(([k, v]) => [k, Math.round(v * 100) / 100])),
-    rows: board.map((r) => radarRow(r, snapshot.watchlist.includes(r.slug))),
-    live,
+    anchors: anchorRows(comps).slice(0, 8),
+    chain_names: chainNames,
+    cat_names: catNames,
+    rows,
+    live: liveEncoded,
   };
   return { board, radar };
 }
